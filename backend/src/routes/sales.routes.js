@@ -1,13 +1,50 @@
 import express from "express";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
+import { getBusinessSettings } from "../services/business-settings.js";
 
 const router = express.Router();
 
 router.use(requireAuth);
 
+function resolveDiscount(subtotal, discountTypeInput, discountValueInput) {
+  const subtotalNumber = Number(subtotal || 0);
+  const discountType = String(discountTypeInput || "amount").trim().toLowerCase();
+  const rawValue = Number(discountValueInput || 0);
+
+  if (!Number.isFinite(rawValue) || rawValue < 0) {
+    return { error: "Descuento invalido" };
+  }
+  if (!["amount", "percent"].includes(discountType)) {
+    return { error: "Tipo de descuento invalido" };
+  }
+  if (discountType === "percent" && rawValue > 100) {
+    return { error: "El descuento en porcentaje no puede ser mayor a 100" };
+  }
+
+  const discountRaw = discountType === "percent" ? (subtotalNumber * rawValue) / 100 : rawValue;
+  const discount = Number(discountRaw.toFixed(2));
+  if (discount > subtotalNumber) {
+    return { error: "El descuento no puede ser mayor al subtotal" };
+  }
+
+  return { discount };
+}
+
 router.post("/", async (req, res) => {
-  const { items, paymentMethod = "cash", customerId = null, notes = null, chargeNow = true } = req.body || {};
+  const branchId = req.user.branchId;
+  const businessSettings = await getBusinessSettings(branchId, pool);
+  const modules = Array.isArray(businessSettings?.enabledModules) ? businessSettings.enabledModules : [];
+  const expirationsEnabled = modules.includes("expirations");
+  const {
+    items,
+    paymentMethod = "cash",
+    customerId = null,
+    notes = null,
+    chargeNow = true,
+    discountType = "amount",
+    discountValue = 0,
+  } = req.body || {};
   const allowedPaymentMethods = ["cash", "card", "transfer", "mixed", "credit"];
   const shouldChargeNow = Boolean(chargeNow);
 
@@ -31,8 +68,8 @@ router.post("/", async (req, res) => {
     let openCashSessionId = null;
     if (shouldChargeNow) {
       const openSession = await client.query(
-        "SELECT id FROM cash_sessions WHERE user_id = $1 AND status = 'open' LIMIT 1",
-        [req.user.sub]
+        "SELECT id FROM cash_sessions WHERE user_id = $1 AND branch_id = $2 AND status = 'open' LIMIT 1",
+        [req.user.sub, branchId]
       );
 
       if (!openSession.rows[0]) {
@@ -42,12 +79,13 @@ router.post("/", async (req, res) => {
       openCashSessionId = openSession.rows[0].id;
     }
 
-    let total = 0;
+    let subtotalAmount = 0;
     const resolvedItems = [];
 
     for (const rawItem of items) {
       const productId = Number(rawItem?.productId);
       const quantity = Number(rawItem?.quantity);
+      const presentationId = rawItem?.presentationId ? Number(rawItem?.presentationId) : null;
 
       if (!productId || !quantity || quantity <= 0) {
         await client.query("ROLLBACK");
@@ -55,8 +93,39 @@ router.post("/", async (req, res) => {
       }
 
       const productResult = await client.query(
-        "SELECT id, sku, name, price, cost, stock, active FROM products WHERE id = $1 LIMIT 1",
-        [productId]
+        `
+          SELECT
+            p.id,
+            p.sku,
+            p.name,
+            p.price,
+            p.cost,
+            p.stock,
+            p.active,
+            p.expiration_required,
+            apd.discount_type,
+            apd.discount_value,
+            CASE
+              WHEN apd.discount_type = 'percent' THEN GREATEST(0, ROUND((p.price - ((p.price * apd.discount_value) / 100.0))::numeric, 2))
+              WHEN apd.discount_type = 'amount' THEN GREATEST(0, ROUND((p.price - apd.discount_value)::numeric, 2))
+              ELSE p.price
+            END AS effective_price
+          FROM products p
+          LEFT JOIN LATERAL (
+            SELECT discount_type, discount_value
+            FROM product_discounts pd
+            WHERE pd.product_id = p.id
+              AND pd.branch_id = p.branch_id
+              AND pd.active = true
+              AND NOW() BETWEEN pd.start_at AND pd.end_at
+            ORDER BY pd.start_at DESC, pd.id DESC
+            LIMIT 1
+          ) apd ON true
+          WHERE p.id = $1
+            AND p.branch_id = $2
+          LIMIT 1
+        `,
+        [productId, branchId]
       );
       const product = productResult.rows[0];
 
@@ -64,29 +133,116 @@ router.post("/", async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(400).json({ message: `Producto ${productId} no disponible` });
       }
-      if (Number(product.stock) < quantity) {
+
+      let selectedPresentation = null;
+      if (presentationId) {
+        const presentationResult = await client.query(
+          `
+            SELECT id, name, units_factor, price, sku, barcode
+            FROM product_presentations
+            WHERE id = $1
+              AND product_id = $2
+              AND branch_id = $3
+              AND active = true
+            LIMIT 1
+          `,
+          [presentationId, productId, branchId]
+        );
+        selectedPresentation = presentationResult.rows[0] || null;
+        if (!selectedPresentation) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ message: `Presentacion invalida para ${product.name}` });
+        }
+      }
+
+      const unitsFactor = Number(selectedPresentation?.units_factor || 1);
+      const stockUnits = quantity * unitsFactor;
+      if (Number(product.stock) < stockUnits) {
         await client.query("ROLLBACK");
         return res.status(400).json({ message: `Stock insuficiente para ${product.name}` });
       }
 
-      const unitPrice = Number(product.price);
+      let batchAllocations = [];
+      if (expirationsEnabled && Boolean(product.expiration_required)) {
+        const batchRows = await client.query(
+          `
+            SELECT id, quantity_current, expiration_date
+            FROM product_batches
+            WHERE product_id = $1
+              AND branch_id = $2
+              AND active = true
+              AND quantity_current > 0
+              AND (expiration_date IS NULL OR expiration_date >= CURRENT_DATE)
+            ORDER BY
+              CASE WHEN expiration_date IS NULL THEN 1 ELSE 0 END,
+              expiration_date ASC,
+              id ASC
+            FOR UPDATE
+          `,
+          [productId, branchId]
+        );
+        const totalBatchStock = batchRows.rows.reduce((sum, row) => sum + Number(row.quantity_current || 0), 0);
+        if (totalBatchStock < stockUnits) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ message: `Stock por lote insuficiente para ${product.name}` });
+        }
+
+        let pendingUnits = stockUnits;
+        for (const row of batchRows.rows) {
+          if (pendingUnits <= 0) break;
+          const available = Number(row.quantity_current || 0);
+          if (available <= 0) continue;
+          const take = Math.min(available, pendingUnits);
+          batchAllocations.push({ batchId: Number(row.id), quantityUnits: take });
+          pendingUnits -= take;
+        }
+      }
+
+      let unitPrice = Number(product.effective_price ?? product.price);
+      if (selectedPresentation) {
+        const presentationBasePrice = Number(selectedPresentation.price || 0);
+        const discountType = String(product.discount_type || "").trim();
+        const discountValue = Number(product.discount_value || 0);
+        if (discountType === "percent") {
+          unitPrice = Math.max(0, Number((presentationBasePrice - (presentationBasePrice * discountValue) / 100).toFixed(2)));
+        } else if (discountType === "amount") {
+          unitPrice = Math.max(0, Number((presentationBasePrice - discountValue).toFixed(2)));
+        } else {
+          unitPrice = presentationBasePrice;
+        }
+      }
       const unitCost = Number(product.cost || 0);
       const subtotal = unitPrice * quantity;
-      total += subtotal;
+      subtotalAmount += subtotal;
 
       resolvedItems.push({
         productId: product.id,
-        sku: product.sku,
+        sku: selectedPresentation?.sku || product.sku,
         name: product.name,
         quantity,
+        presentationId: selectedPresentation ? Number(selectedPresentation.id) : null,
+        presentationName: selectedPresentation?.name || "Unidad",
+        unitsFactor,
+        stockUnits,
+        batchAllocations,
         unitCost,
         unitPrice,
         subtotal,
       });
     }
 
+    const discountResolved = resolveDiscount(subtotalAmount, discountType, discountValue);
+    if (discountResolved.error) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: discountResolved.error });
+    }
+
+    const discount = Number(discountResolved.discount || 0);
+    const total = Number((subtotalAmount - discount).toFixed(2));
+
     const saleNumberResult = await client.query(
-      "SELECT CONCAT('VENTA-', LPAD((COALESCE(MAX(id),0) + 1)::text, 6, '0')) AS sale_number FROM sales"
+      "SELECT CONCAT('VENTA-', LPAD((COALESCE(MAX(id),0) + 1)::text, 6, '0')) AS sale_number FROM sales WHERE branch_id = $1",
+      [branchId]
     );
     const saleNumber = saleNumberResult.rows[0].sale_number;
 
@@ -106,7 +262,8 @@ router.post("/", async (req, res) => {
           notes,
           sale_date,
           charged_at,
-          cash_session_id
+          cash_session_id,
+          branch_id
         )
         VALUES (
           $1,
@@ -114,22 +271,25 @@ router.post("/", async (req, res) => {
           $3,
           $4,
           0,
-          0,
-          $4,
           $5,
           $6,
           $7,
           $8,
+          $9,
+          $10,
           NOW(),
-          CASE WHEN $9 THEN NOW() ELSE NULL END,
-          $10
+          CASE WHEN $11 THEN NOW() ELSE NULL END,
+          $12,
+          $13
         )
-        RETURNING id, sale_number, user_id, charged_by_user_id, subtotal, total, customer_id, payment_method, payment_status, sale_date
+        RETURNING id, sale_number, user_id, charged_by_user_id, subtotal, discount, total, customer_id, payment_method, payment_status, sale_date
       `,
       [
         saleNumber,
         req.user.sub,
         shouldChargeNow ? req.user.sub : null,
+        subtotalAmount,
+        discount,
         total,
         Number(customerId) || null,
         paymentMethod,
@@ -137,28 +297,70 @@ router.post("/", async (req, res) => {
         notes,
         shouldChargeNow,
         openCashSessionId,
+        branchId,
       ]
     );
     const sale = saleInsert.rows[0];
 
     for (const item of resolvedItems) {
-      await client.query(
+      const saleItemInsert = await client.query(
         `
           INSERT INTO sale_items (
             sale_id,
             product_id,
             product_name,
             product_sku,
+            presentation_id,
+            presentation_name,
+            units_factor,
             quantity,
             cost_historico,
             unit_price,
             subtotal
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          RETURNING id
         `,
-        [sale.id, item.productId, item.name, item.sku, item.quantity, item.unitCost, item.unitPrice, item.subtotal]
+        [
+          sale.id,
+          item.productId,
+          item.name,
+          item.sku,
+          item.presentationId,
+          item.presentationName,
+          item.unitsFactor,
+          item.quantity,
+          item.unitCost,
+          item.unitPrice,
+          item.subtotal,
+        ]
       );
-
+      const saleItemId = Number(saleItemInsert.rows[0]?.id || 0);
+      if (Array.isArray(item.batchAllocations) && item.batchAllocations.length) {
+        for (const alloc of item.batchAllocations) {
+          await client.query("UPDATE product_batches SET quantity_current = quantity_current - $1 WHERE id = $2", [
+            alloc.quantityUnits,
+            alloc.batchId,
+          ]);
+          await client.query(
+            `
+              INSERT INTO sale_item_batch_allocations (sale_item_id, batch_id, quantity_units, returned_units)
+              VALUES ($1, $2, $3, 0)
+            `,
+            [saleItemId, alloc.batchId, alloc.quantityUnits]
+          );
+          await client.query(
+            `
+              INSERT INTO product_batch_movements (
+                batch_id, product_id, branch_id, movement_type, quantity, reason, sale_id, created_by_user_id
+              )
+              VALUES ($1, $2, $3, 'sale', $4, 'Venta POS', $5, $6)
+            `,
+            [alloc.batchId, item.productId, branchId, alloc.quantityUnits, sale.id, req.user.sub]
+          );
+        }
+      }
+      await client.query("UPDATE products SET stock = stock - $1 WHERE id = $2", [item.stockUnits, item.productId]);
     }
 
     if (shouldChargeNow && paymentMethod === "cash" && openCashSessionId) {
@@ -192,6 +394,8 @@ router.post("/:id/charge", async (req, res) => {
   const saleId = Number(req.params.id);
   const paymentMethod = String(req.body?.paymentMethod || "cash");
   const customerId = req.body?.customerId ?? null;
+  const discountType = String(req.body?.discountType || "amount");
+  const discountValue = req.body?.discountValue ?? null;
   const allowedPaymentMethods = ["cash", "card", "transfer", "mixed", "credit"];
 
   if (!saleId) {
@@ -209,8 +413,8 @@ router.post("/:id/charge", async (req, res) => {
     await client.query("BEGIN");
 
     const openSession = await client.query(
-      "SELECT id FROM cash_sessions WHERE user_id = $1 AND status = 'open' LIMIT 1",
-      [req.user.sub]
+      "SELECT id FROM cash_sessions WHERE user_id = $1 AND branch_id = $2 AND status = 'open' LIMIT 1",
+      [req.user.sub, req.user.branchId]
     );
     if (!openSession.rows[0]) {
       await client.query("ROLLBACK");
@@ -219,12 +423,12 @@ router.post("/:id/charge", async (req, res) => {
 
     const saleResult = await client.query(
       `
-        SELECT id, payment_status, payment_method
+        SELECT id, payment_status, payment_method, subtotal, discount, total
         FROM sales
-        WHERE id = $1
+        WHERE id = $1 AND branch_id = $2
         FOR UPDATE
       `,
-      [saleId]
+      [saleId, req.user.branchId]
     );
 
     const sale = saleResult.rows[0];
@@ -241,19 +445,33 @@ router.post("/:id/charge", async (req, res) => {
       return res.status(400).json({ message: "Solo se pueden cobrar ventas pendientes" });
     }
 
+    let nextDiscount = Number(sale.discount || 0);
+    let nextTotal = Number(sale.total || 0);
+    if (discountValue !== null && discountValue !== undefined && String(discountValue).trim() !== "") {
+      const discountResolved = resolveDiscount(sale.subtotal, discountType, discountValue);
+      if (discountResolved.error) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: discountResolved.error });
+      }
+      nextDiscount = Number(discountResolved.discount || 0);
+      nextTotal = Number((Number(sale.subtotal || 0) - nextDiscount).toFixed(2));
+    }
+
     const updated = await client.query(
       `
         UPDATE sales
         SET payment_status = 'completed',
             payment_method = $1,
             customer_id = COALESCE($2, customer_id),
-            cash_session_id = $3,
-            charged_by_user_id = $4,
+            discount = $3,
+            total = $4,
+            cash_session_id = $5,
+            charged_by_user_id = $6,
             charged_at = NOW()
-        WHERE id = $5
-        RETURNING id, sale_number, payment_status, payment_method, charged_by_user_id, charged_at
+        WHERE id = $7
+        RETURNING id, sale_number, payment_status, payment_method, discount, total, charged_by_user_id, charged_at
       `,
-      [paymentMethod, Number(customerId) || null, openSession.rows[0].id, req.user.sub, saleId]
+      [paymentMethod, Number(customerId) || null, nextDiscount, nextTotal, openSession.rows[0].id, req.user.sub, saleId]
     );
 
     if (paymentMethod === "cash") {
@@ -300,12 +518,15 @@ router.post("/:id/refund", async (req, res) => {
   }
 
   const client = await pool.connect();
+  const businessSettings = await getBusinessSettings(req.user.branchId, pool);
+  const modules = Array.isArray(businessSettings?.enabledModules) ? businessSettings.enabledModules : [];
+  const expirationsEnabled = modules.includes("expirations");
   try {
     await client.query("BEGIN");
 
     const openSession = await client.query(
-      "SELECT id FROM cash_sessions WHERE user_id = $1 AND status = 'open' LIMIT 1",
-      [req.user.sub]
+      "SELECT id FROM cash_sessions WHERE user_id = $1 AND branch_id = $2 AND status = 'open' LIMIT 1",
+      [req.user.sub, req.user.branchId]
     );
     if (!openSession.rows[0]) {
       await client.query("ROLLBACK");
@@ -316,10 +537,10 @@ router.post("/:id/refund", async (req, res) => {
       `
         SELECT id, payment_status
         FROM sales
-        WHERE id = $1
+        WHERE id = $1 AND branch_id = $2
         FOR UPDATE
       `,
-      [saleId]
+      [saleId, req.user.branchId]
     );
     const sale = saleResult.rows[0];
     if (!sale) {
@@ -333,7 +554,7 @@ router.post("/:id/refund", async (req, res) => {
 
     const saleItemsResult = await client.query(
       `
-        SELECT id, product_id, quantity, unit_price, returned_quantity
+        SELECT id, product_id, quantity, unit_price, returned_quantity, units_factor
         FROM sale_items
         WHERE sale_id = $1
         FOR UPDATE
@@ -352,6 +573,7 @@ router.post("/:id/refund", async (req, res) => {
       quantity: Number(row.quantity),
       unitPrice: Number(row.unit_price),
       returnedQuantity: Number(row.returned_quantity || 0),
+      unitsFactor: Number(row.units_factor || 1),
       refundableQuantity: Math.max(0, Number(row.quantity) - Number(row.returned_quantity || 0)),
     }));
 
@@ -396,6 +618,7 @@ router.post("/:id/refund", async (req, res) => {
         saleItemId: baseItem.saleItemId,
         productId: baseItem.productId,
         quantity: reqItem.quantity,
+        unitsFactor: baseItem.unitsFactor,
         unitPrice: baseItem.unitPrice,
         subtotal,
       });
@@ -409,6 +632,7 @@ router.post("/:id/refund", async (req, res) => {
       `
         INSERT INTO sale_returns (
           sale_id,
+          branch_id,
           processed_by_user_id,
           cash_session_id,
           return_type,
@@ -416,10 +640,10 @@ router.post("/:id/refund", async (req, res) => {
           total_refund,
           notes
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id, sale_id, return_type, refund_method, total_refund, created_at
       `,
-      [saleId, req.user.sub, openSession.rows[0].id, returnType, refundMethod, totalRefund, notes]
+      [saleId, req.user.branchId, req.user.sub, openSession.rows[0].id, returnType, refundMethod, totalRefund, notes]
     );
     const returnRow = returnInsert.rows[0];
 
@@ -449,7 +673,48 @@ router.post("/:id/refund", async (req, res) => {
       );
 
       if (item.productId) {
-        await client.query("UPDATE products SET stock = stock + $1 WHERE id = $2", [item.quantity, item.productId]);
+        const stockUnits = item.quantity * Math.max(1, Number(item.unitsFactor || 1));
+        await client.query("UPDATE products SET stock = stock + $1 WHERE id = $2", [stockUnits, item.productId]);
+
+        if (!expirationsEnabled) {
+          continue;
+        }
+        const allocationRows = await client.query(
+          `
+            SELECT id, batch_id, quantity_units, returned_units
+            FROM sale_item_batch_allocations
+            WHERE sale_item_id = $1
+            ORDER BY id ASC
+            FOR UPDATE
+          `,
+          [item.saleItemId]
+        );
+
+        let pendingUnits = stockUnits;
+        for (const alloc of allocationRows.rows) {
+          if (pendingUnits <= 0) break;
+          const availableToReturn = Math.max(0, Number(alloc.quantity_units || 0) - Number(alloc.returned_units || 0));
+          if (availableToReturn <= 0) continue;
+          const toReturn = Math.min(availableToReturn, pendingUnits);
+          await client.query(
+            "UPDATE sale_item_batch_allocations SET returned_units = returned_units + $1 WHERE id = $2",
+            [toReturn, alloc.id]
+          );
+          await client.query("UPDATE product_batches SET quantity_current = quantity_current + $1 WHERE id = $2", [
+            toReturn,
+            alloc.batch_id,
+          ]);
+          await client.query(
+            `
+              INSERT INTO product_batch_movements (
+                batch_id, product_id, branch_id, movement_type, quantity, reason, sale_id, sale_item_id, created_by_user_id
+              )
+              VALUES ($1, $2, $3, 'refund', $4, 'Devolucion POS', $5, $6, $7)
+            `,
+            [alloc.batch_id, item.productId, req.user.branchId, toReturn, saleId, item.saleItemId, req.user.sub]
+          );
+          pendingUnits -= toReturn;
+        }
       }
     }
 
@@ -465,7 +730,10 @@ router.post("/:id/refund", async (req, res) => {
     }
 
     if (returnType === "full") {
-      await client.query("UPDATE sales SET payment_status = 'refunded' WHERE id = $1", [saleId]);
+      await client.query("UPDATE sales SET payment_status = 'refunded' WHERE id = $1 AND branch_id = $2", [
+        saleId,
+        req.user.branchId,
+      ]);
     }
 
     await client.query("COMMIT");
@@ -486,21 +754,28 @@ router.post("/:id/refund", async (req, res) => {
 });
 
 router.get("/recent", async (req, res) => {
+  const branchId = req.user.branchId;
   const result = await pool.query(
     `
       SELECT id, sale_number, total, customer_id, payment_method, payment_status, sale_date
       FROM sales
+      WHERE branch_id = $1
       ORDER BY sale_date DESC
       LIMIT 50
-    `
+    `,
+    [branchId]
   );
   return res.json(result.rows);
 });
 
 router.get("/", async (req, res) => {
+  const branchId = req.user.branchId;
   const search = String(req.query.search || "").trim();
   const paymentMethod = String(req.query.paymentMethod || "all");
   const paymentStatus = String(req.query.paymentStatus || "all");
+  const fromDate = String(req.query.from || "").trim();
+  const toDate = String(req.query.to || "").trim();
+  const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 
   const values = [];
   const where = [];
@@ -521,14 +796,34 @@ router.get("/", async (req, res) => {
     values.push(paymentStatus);
     idx += 1;
   }
+  if (fromDate) {
+    if (!isIsoDate(fromDate)) {
+      return res.status(400).json({ message: "Parametro from invalido. Usa formato YYYY-MM-DD" });
+    }
+    where.push(`s.sale_date::date >= $${idx}::date`);
+    values.push(fromDate);
+    idx += 1;
+  }
+  if (toDate) {
+    if (!isIsoDate(toDate)) {
+      return res.status(400).json({ message: "Parametro to invalido. Usa formato YYYY-MM-DD" });
+    }
+    where.push(`s.sale_date::date <= $${idx}::date`);
+    values.push(toDate);
+    idx += 1;
+  }
 
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  where.unshift(`s.branch_id = $${idx}`);
+  values.push(branchId);
+  const whereSql = `WHERE ${where.join(" AND ")}`;
   const result = await pool.query(
     `
       SELECT
         s.id,
         s.sale_number,
         s.sale_date,
+        s.subtotal,
+        s.discount,
         s.total,
         s.customer_id,
         s.payment_method,
@@ -546,6 +841,8 @@ router.get("/", async (req, res) => {
         s.id,
         s.sale_number,
         s.sale_date,
+        s.subtotal,
+        s.discount,
         s.total,
         s.payment_method,
         s.payment_status,
@@ -571,6 +868,8 @@ router.get("/:id", async (req, res) => {
         s.id,
         s.sale_number,
         s.sale_date,
+        s.subtotal,
+        s.discount,
         s.total,
         s.customer_id,
         s.payment_method,
@@ -581,10 +880,10 @@ router.get("/:id", async (req, res) => {
       FROM sales s
       LEFT JOIN users creator ON creator.id = s.user_id
       LEFT JOIN users charger ON charger.id = s.charged_by_user_id
-      WHERE s.id = $1
+      WHERE s.id = $1 AND s.branch_id = $2
       LIMIT 1
     `,
-    [id]
+    [id, req.user.branchId]
   );
 
   const sale = saleResult.rows[0];
@@ -599,6 +898,9 @@ router.get("/:id", async (req, res) => {
         product_id,
         product_name,
         product_sku,
+        presentation_id,
+        presentation_name,
+        units_factor,
         quantity,
         returned_quantity,
         (quantity - returned_quantity) AS refundable_quantity,
@@ -606,7 +908,7 @@ router.get("/:id", async (req, res) => {
         unit_price,
         subtotal,
         (subtotal - (cost_historico * quantity))::DECIMAL(10, 2) AS utilidad
-      FROM sale_items
+      FROM sale_items si
       WHERE sale_id = $1
       ORDER BY id ASC
     `,

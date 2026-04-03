@@ -1,0 +1,8 @@
+ALTER TABLE business_settings
+ADD COLUMN IF NOT EXISTS primary_color VARCHAR(7) NOT NULL DEFAULT '#0F172A';
+
+ALTER TABLE business_settings
+ADD COLUMN IF NOT EXISTS accent_color VARCHAR(7) NOT NULL DEFAULT '#1D4ED8';
+
+ALTER TABLE business_settings
+ADD COLUMN IF NOT EXISTS section_borders BOOLEAN NOT NULL DEFAULT true;

@@ -1,0 +1,16 @@
+[Unit]
+Description=POS Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/var/www/punto-de-venta/backend
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+

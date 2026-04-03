@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import { pool } from "../db/pool.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { getSystemSettings } from "../services/system-settings.js";
 
 const router = express.Router();
 
@@ -13,7 +14,7 @@ router.get("/", async (_req, res) => {
       SELECT u.id, u.username, u.email, u.full_name, u.role, u.branch_id, b.name AS branch_name, u.active, u.last_login, u.created_at
       FROM users u
       LEFT JOIN branches b ON b.id = u.branch_id
-      ORDER BY id DESC
+      ORDER BY u.id DESC
     `
   );
   return res.json(result.rows);
@@ -30,7 +31,8 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ message: "Rol invalido" });
   }
 
-  const parsedBranchId = Number(branchId || 0) || 1;
+  const systemSettings = await getSystemSettings(pool);
+  const parsedBranchId = systemSettings.multiBranchEnabled ? Number(branchId || 0) || 1 : 1;
   const branchCheck = await pool.query("SELECT id FROM branches WHERE id = $1 AND active = true LIMIT 1", [parsedBranchId]);
   if (!branchCheck.rows[0]) {
     return res.status(400).json({ message: "Sucursal invalida" });
@@ -63,12 +65,14 @@ router.patch("/:id", async (req, res) => {
   }
 
   const { fullName, role, active, branchId } = req.body || {};
+  const systemSettings = await getSystemSettings(pool);
   const allowedRoles = ["superadmin", "admin", "manager", "cashier"];
   if (role && !allowedRoles.includes(role)) {
     return res.status(400).json({ message: "Rol invalido" });
   }
 
-  const parsedBranchId = branchId !== undefined ? Number(branchId || 0) : undefined;
+  const parsedBranchId =
+    branchId !== undefined && systemSettings.multiBranchEnabled ? Number(branchId || 0) : undefined;
   if (parsedBranchId !== undefined) {
     const branchCheck = await pool.query("SELECT id FROM branches WHERE id = $1 AND active = true LIMIT 1", [parsedBranchId]);
     if (!branchCheck.rows[0]) {

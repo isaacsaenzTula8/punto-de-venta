@@ -8,6 +8,10 @@ import Reports from "./pages/Reports";
 import Login from "./pages/Login";
 import Users from "./pages/Users";
 import Categories from "./pages/Categories";
+import Branches from "./pages/Branches";
+import Settings from "./pages/Settings";
+import OnlineOrders from "./pages/OnlineOrders";
+import OnlineCheckout from "./pages/OnlineCheckout";
 import ProtectedRoute from "./auth/ProtectedRoute";
 import RoleRoute from "./auth/RoleRoute";
 
@@ -15,6 +19,14 @@ export const router = createBrowserRouter([
   {
     path: "/login",
     Component: Login,
+  },
+  {
+    path: "/shop/:branchId",
+    Component: OnlineCheckout,
+  },
+  {
+    path: "/shop",
+    Component: OnlineCheckout,
   },
   {
     Component: ProtectedRoute,
@@ -29,10 +41,15 @@ export const router = createBrowserRouter([
           { path: "products", Component: Products },
           { path: "categories", Component: Categories },
           { path: "sales", Component: Sales },
+          { path: "online-orders", Component: OnlineOrders },
           { path: "reports", Component: Reports },
           {
             Component: RoleRoute,
-            children: [{ path: "users", Component: Users }],
+            children: [
+              { path: "users", Component: Users },
+              { path: "branches", Component: Branches },
+              { path: "settings", Component: Settings },
+            ],
           },
         ],
       },

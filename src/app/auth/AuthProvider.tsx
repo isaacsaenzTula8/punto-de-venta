@@ -12,6 +12,21 @@ interface StoreSettings {
   cashierCanCharge: boolean;
 }
 
+export interface BusinessSettings {
+  businessName: string;
+  nit: string;
+  phone: string;
+  address: string;
+  currencyCode: string;
+  logoUrl: string;
+  useDarkMode: boolean;
+  primaryColor: string;
+  accentColor: string;
+  sectionBorders: boolean;
+  storeVertical?: string;
+  enabledModules?: string[];
+}
+
 export interface AuthUser {
   id: number;
   username: string;
@@ -26,6 +41,7 @@ export interface AuthUser {
 interface AuthContextValue {
   user: AuthUser | null;
   storeSettings: StoreSettings | null;
+  businessSettings: BusinessSettings | null;
   token: string | null;
   loading: boolean;
   isAuthenticated: boolean;
@@ -42,6 +58,7 @@ const STORAGE_USER = "pos_auth_user";
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [storeSettings, setStoreSettings] = useState<StoreSettings | null>(null);
+  const [businessSettings, setBusinessSettings] = useState<BusinessSettings | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const idleTimerRef = useRef<number | null>(null);
@@ -66,6 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearIdleTimer();
     setUser(null);
     setStoreSettings(null);
+    setBusinessSettings(null);
     setToken(null);
     localStorage.removeItem(STORAGE_TOKEN);
     localStorage.removeItem(STORAGE_USER);
@@ -134,6 +152,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setStoreSettings({
           cashierCanCharge: Boolean(me.storeSettings?.cashierCanCharge ?? true),
         });
+        setBusinessSettings({
+          businessName: String(me.businessSettings?.businessName || "Mi Negocio"),
+          nit: String(me.businessSettings?.nit || ""),
+          phone: String(me.businessSettings?.phone || ""),
+          address: String(me.businessSettings?.address || ""),
+          currencyCode: String(me.businessSettings?.currencyCode || "GTQ"),
+          logoUrl: String(me.businessSettings?.logoUrl || ""),
+          useDarkMode: Boolean(me.businessSettings?.useDarkMode),
+          primaryColor: String(me.businessSettings?.primaryColor || "#0F172A"),
+          accentColor: String(me.businessSettings?.accentColor || "#1D4ED8"),
+          sectionBorders: Boolean(me.businessSettings?.sectionBorders ?? true),
+          storeVertical: String(me.businessSettings?.storeVertical || "general"),
+          enabledModules: Array.isArray(me.businessSettings?.enabledModules) ? me.businessSettings.enabledModules : [],
+        });
         localStorage.setItem(STORAGE_USER, JSON.stringify(normalized));
       })
       .catch(() => logout())
@@ -167,6 +199,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStoreSettings({
       cashierCanCharge: Boolean(data.storeSettings?.cashierCanCharge ?? true),
     });
+    setBusinessSettings({
+      businessName: String(data.businessSettings?.businessName || "Mi Negocio"),
+      nit: String(data.businessSettings?.nit || ""),
+      phone: String(data.businessSettings?.phone || ""),
+      address: String(data.businessSettings?.address || ""),
+      currencyCode: String(data.businessSettings?.currencyCode || "GTQ"),
+      logoUrl: String(data.businessSettings?.logoUrl || ""),
+      useDarkMode: Boolean(data.businessSettings?.useDarkMode),
+      primaryColor: String(data.businessSettings?.primaryColor || "#0F172A"),
+      accentColor: String(data.businessSettings?.accentColor || "#1D4ED8"),
+      sectionBorders: Boolean(data.businessSettings?.sectionBorders ?? true),
+      storeVertical: String(data.businessSettings?.storeVertical || "general"),
+      enabledModules: Array.isArray(data.businessSettings?.enabledModules) ? data.businessSettings.enabledModules : [],
+    });
     localStorage.setItem(STORAGE_TOKEN, data.token);
     localStorage.setItem(STORAGE_USER, JSON.stringify(normalized));
   }, []);
@@ -175,13 +221,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       storeSettings,
+      businessSettings,
       token,
       loading,
       isAuthenticated: Boolean(user && token),
       login,
       logout,
     }),
-    [user, storeSettings, token, loading, login, logout]
+    [user, storeSettings, businessSettings, token, loading, login, logout]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

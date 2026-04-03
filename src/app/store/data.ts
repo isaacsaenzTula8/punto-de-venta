@@ -2,13 +2,34 @@
 export interface Product {
   id: string;
   name: string;
+  brand?: string;
   price: number;
+  discountedPrice?: number;
+  hasActiveDiscount?: boolean;
+  activeDiscountType?: "amount" | "percent" | null;
+  activeDiscountValue?: number | null;
+  activeDiscountStartAt?: string | null;
+  activeDiscountEndAt?: string | null;
   category: string;
   image?: string;
+  imageUrl?: string;
   stock: number;
   sku: string;
   barcode?: string;
+  locationCode?: string;
   description?: string;
+  presentations?: ProductPresentation[];
+}
+
+export interface ProductPresentation {
+  id: number;
+  name: string;
+  sku?: string;
+  barcode?: string;
+  unitsFactor: number;
+  price: number;
+  isDefault?: boolean;
+  active?: boolean;
 }
 
 export interface CartItem {

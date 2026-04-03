@@ -6,6 +6,8 @@ import { pool } from "../db/pool.js";
 import { env } from "../config/env.js";
 import { requireAuth } from "../middleware/auth.js";
 import { buildUserPermissions, getStoreSettings } from "../services/store-settings.js";
+import { getSystemSettings } from "../services/system-settings.js";
+import { getBusinessSettings } from "../services/business-settings.js";
 
 const router = express.Router();
 
@@ -114,6 +116,8 @@ router.post("/login", async (req, res) => {
   );
 
   const storeSettings = await getStoreSettings(user.branch_id || 1, pool);
+  const systemSettings = await getSystemSettings(pool);
+  const businessSettings = await getBusinessSettings(user.branch_id || 1, pool);
   const permissions = buildUserPermissions(user.role, storeSettings);
 
   return res.json({
@@ -129,6 +133,8 @@ router.post("/login", async (req, res) => {
       permissions,
     },
     storeSettings,
+    systemSettings,
+    businessSettings,
   });
 });
 
@@ -167,6 +173,8 @@ router.get("/me", requireAuth, async (req, res) => {
     ...result.rows[0],
     permissions: req.permissions,
     storeSettings: req.storeSettings,
+    systemSettings: req.systemSettings,
+    businessSettings: await getBusinessSettings(result.rows[0].branch_id || req.user.branchId || 1, pool),
   });
 });
 

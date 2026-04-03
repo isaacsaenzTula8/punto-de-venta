@@ -41,6 +41,10 @@ BEGIN
   END IF;
 END $$;
 
+ALTER TABLE categories DROP CONSTRAINT IF EXISTS categories_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_branch_name_unique
+ON categories(branch_id, name);
+
 ALTER TABLE categories
 ADD COLUMN IF NOT EXISTS branch_id INTEGER;
 

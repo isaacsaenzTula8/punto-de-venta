@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 import { buildUserPermissions, getStoreSettings } from "../services/store-settings.js";
+import { getSystemSettings } from "../services/system-settings.js";
 
 export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
@@ -70,6 +71,8 @@ export async function requireAuth(req, res, next) {
 
     const effectiveBranchId = user.branch_id || 1;
     const storeSettings = await getStoreSettings(effectiveBranchId, pool);
+    const systemSettings = await getSystemSettings(pool);
+
     req.user = {
       sub: user.id,
       username: user.username,
@@ -79,6 +82,7 @@ export async function requireAuth(req, res, next) {
       sid: payload.sid,
     };
     req.storeSettings = storeSettings;
+    req.systemSettings = systemSettings;
     req.permissions = buildUserPermissions(user.role, storeSettings);
     req.sessionId = session.id;
     return next();

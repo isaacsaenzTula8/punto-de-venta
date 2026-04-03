@@ -5,28 +5,9 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Badge } from "../components/ui/badge";
 import { Switch } from "../components/ui/switch";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../components/ui/table";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { apiRequest } from "../lib/api";
 import { useAuth } from "../auth/AuthProvider";
 import { toast } from "sonner";
@@ -40,9 +21,18 @@ interface UserRow {
   email: string;
   full_name: string;
   role: Role;
+  branch_id?: number;
+  branch_name?: string;
   active: boolean;
   last_login: string | null;
   created_at: string;
+}
+
+interface BranchRow {
+  id: number;
+  code: string;
+  name: string;
+  active: boolean;
 }
 
 const roleOptions: Role[] = ["superadmin", "admin", "manager", "cashier"];
@@ -56,9 +46,12 @@ const roleLabels: Record<Role, string> = {
 export default function Users() {
   const { token } = useAuth();
   const [users, setUsers] = useState<UserRow[]>([]);
+  const [branches, setBranches] = useState<BranchRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [cashierCanCharge, setCashierCanCharge] = useState(true);
+  const [multiBranchEnabled, setMultiBranchEnabled] = useState(false);
+  const [updatingSystemSetting, setUpdatingSystemSetting] = useState(false);
   const [updatingStoreSetting, setUpdatingStoreSetting] = useState(false);
   const [form, setForm] = useState({
     username: "",
@@ -66,6 +59,7 @@ export default function Users() {
     fullName: "",
     role: "cashier" as Role,
     password: "",
+    branchId: "1",
   });
 
   const fetchUsers = async () => {
@@ -81,6 +75,17 @@ export default function Users() {
     }
   };
 
+  const fetchBranches = async () => {
+    if (!token || !multiBranchEnabled) return;
+    try {
+      const data = await apiRequest("/branches", { token });
+      const rows = Array.isArray(data) ? data : [];
+      setBranches(rows.filter((b: BranchRow) => b.active));
+    } catch {
+      setBranches([]);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
   }, [token]);
@@ -88,13 +93,38 @@ export default function Users() {
   useEffect(() => {
     if (!token) return;
     apiRequest("/settings/store", { token })
-      .then((data) => {
-        setCashierCanCharge(Boolean(data?.cashierCanCharge));
-      })
-      .catch(() => {
-        setCashierCanCharge(true);
-      });
+      .then((data) => setCashierCanCharge(Boolean(data?.cashierCanCharge)))
+      .catch(() => setCashierCanCharge(true));
   }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    apiRequest("/settings/system", { token })
+      .then((data) => setMultiBranchEnabled(Boolean(data?.multiBranchEnabled)))
+      .catch(() => setMultiBranchEnabled(false));
+  }, [token]);
+
+  useEffect(() => {
+    fetchBranches();
+  }, [token, multiBranchEnabled]);
+
+  const toggleMultiBranch = async (enabled: boolean) => {
+    if (!token || updatingSystemSetting) return;
+    setUpdatingSystemSetting(true);
+    try {
+      const data = await apiRequest("/settings/system", {
+        method: "PATCH",
+        token,
+        body: JSON.stringify({ multiBranchEnabled: enabled }),
+      });
+      setMultiBranchEnabled(Boolean(data?.multiBranchEnabled));
+      toast.success(enabled ? "Modo sucursales activado" : "Modo sucursales desactivado");
+    } catch (error: any) {
+      toast.error(error?.message || "No se pudo actualizar modo sucursales");
+    } finally {
+      setUpdatingSystemSetting(false);
+    }
+  };
 
   const toggleCashierChargePolicy = async (enabled: boolean) => {
     if (!token || updatingStoreSetting) return;
@@ -120,11 +150,14 @@ export default function Users() {
       await apiRequest("/users", {
         method: "POST",
         token,
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          ...form,
+          branchId: Number(form.branchId || 1),
+        }),
       });
       toast.success("Usuario creado");
       setShowCreate(false);
-      setForm({ username: "", email: "", fullName: "", role: "cashier", password: "" });
+      setForm({ username: "", email: "", fullName: "", role: "cashier", password: "", branchId: "1" });
       fetchUsers();
     } catch (error: any) {
       toast.error(error?.message || "No se pudo crear usuario");
@@ -159,9 +192,23 @@ export default function Users() {
     }
   };
 
+  const updateBranch = async (user: UserRow, branchId: string) => {
+    if (!token) return;
+    try {
+      await apiRequest(`/users/${user.id}`, {
+        method: "PATCH",
+        token,
+        body: JSON.stringify({ branchId: Number(branchId) }),
+      });
+      fetchUsers();
+    } catch (error: any) {
+      toast.error(error?.message || "No se pudo actualizar sucursal");
+    }
+  };
+
   const resetPassword = async (user: UserRow) => {
     if (!token) return;
-    const password = window.prompt(`Nueva contraseña para ${user.username}:`);
+    const password = window.prompt(`Nueva contrasena para ${user.username}:`);
     if (!password) return;
     try {
       await apiRequest(`/users/${user.id}/reset-password`, {
@@ -169,9 +216,9 @@ export default function Users() {
         token,
         body: JSON.stringify({ password }),
       });
-      toast.success("Contraseña actualizada");
+      toast.success("Contrasena actualizada");
     } catch (error: any) {
-      toast.error(error?.message || "No se pudo cambiar la contraseña");
+      toast.error(error?.message || "No se pudo cambiar la contrasena");
     }
   };
 
@@ -181,7 +228,7 @@ export default function Users() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Usuarios</h1>
-            <p className="text-sm text-gray-500">Administración de cuentas del sistema</p>
+            <p className="text-sm text-gray-500">Administracion de cuentas del sistema</p>
           </div>
           <Button className="gap-2" onClick={() => setShowCreate(true)}>
             <UserPlus className="h-4 w-4" />
@@ -194,21 +241,29 @@ export default function Users() {
         <Card className="p-4 mb-6">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="font-semibold text-gray-900">Politica de cobro de tienda</p>
-              <p className="text-sm text-gray-600">
-                Si se desactiva, los cajeros solo registran pedidos y un administrador realiza el cobro.
-              </p>
+              <p className="font-semibold text-gray-900">Modo sucursales</p>
+              <p className="text-sm text-gray-600">Solo superadmin puede habilitar o deshabilitar operacion multi-sucursal.</p>
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-sm text-gray-700">Cajero puede cobrar</span>
-              <Switch
-                checked={cashierCanCharge}
-                disabled={updatingStoreSetting}
-                onCheckedChange={toggleCashierChargePolicy}
-              />
+              <span className="text-sm text-gray-700">Multi-sucursal</span>
+              <Switch checked={multiBranchEnabled} disabled={updatingSystemSetting} onCheckedChange={toggleMultiBranch} />
             </div>
           </div>
         </Card>
+
+        <Card className="p-4 mb-6">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="font-semibold text-gray-900">Politica de cobro de tienda</p>
+              <p className="text-sm text-gray-600">Si se desactiva, cajeros solo registran pedidos y un admin cobra.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-gray-700">Cajero puede cobrar</span>
+              <Switch checked={cashierCanCharge} disabled={updatingStoreSetting} onCheckedChange={toggleCashierChargePolicy} />
+            </div>
+          </div>
+        </Card>
+
         <Card>
           <div className="overflow-x-auto">
             <Table>
@@ -218,8 +273,9 @@ export default function Users() {
                   <TableHead>Nombre</TableHead>
                   <TableHead>Correo</TableHead>
                   <TableHead>Rol</TableHead>
+                  {multiBranchEnabled && <TableHead>Sucursal</TableHead>}
                   <TableHead>Estado</TableHead>
-                  <TableHead>Último acceso</TableHead>
+                  <TableHead>Ultimo acceso</TableHead>
                   <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
               </TableHeader>
@@ -243,14 +299,28 @@ export default function Users() {
                         </SelectContent>
                       </Select>
                     </TableCell>
+                    {multiBranchEnabled && (
+                      <TableCell>
+                        <Select value={String(u.branch_id || 1)} onValueChange={(value) => updateBranch(u, value)}>
+                          <SelectTrigger className="w-44">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {branches.map((b) => (
+                              <SelectItem key={b.id} value={String(b.id)}>
+                                {b.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                    )}
                     <TableCell>
                       <Badge className={u.active ? "bg-green-600" : "bg-gray-500"}>
                         {u.active ? "Activo" : "Inactivo"}
                       </Badge>
                     </TableCell>
-                    <TableCell>
-                      {u.last_login ? new Date(u.last_login).toLocaleString("es-GT") : "Nunca"}
-                    </TableCell>
+                    <TableCell>{u.last_login ? new Date(u.last_login).toLocaleString("es-GT") : "Nunca"}</TableCell>
                     <TableCell className="text-right space-x-2">
                       <Button variant="outline" size="sm" onClick={() => toggleActive(u)}>
                         {u.active ? "Desactivar" : "Activar"}
@@ -264,9 +334,7 @@ export default function Users() {
               </TableBody>
             </Table>
 
-            {!loading && users.length === 0 && (
-              <div className="text-center py-10 text-gray-500">No hay usuarios</div>
-            )}
+            {!loading && users.length === 0 && <div className="text-center py-10 text-gray-500">No hay usuarios</div>}
           </div>
         </Card>
       </div>
@@ -304,13 +372,26 @@ export default function Users() {
                 </SelectContent>
               </Select>
             </div>
+            {multiBranchEnabled && (
+              <div className="space-y-1">
+                <Label>Sucursal</Label>
+                <Select value={form.branchId} onValueChange={(value) => setForm({ ...form, branchId: value })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona sucursal" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {branches.map((b) => (
+                      <SelectItem key={b.id} value={String(b.id)}>
+                        {b.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="space-y-1">
-              <Label>Contraseña</Label>
-              <Input
-                type="password"
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-              />
+              <Label>Contrasena</Label>
+              <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
             </div>
           </div>
           <DialogFooter>

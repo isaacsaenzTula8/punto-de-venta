@@ -48,8 +48,29 @@ interface TopProduct {
   totalRevenue: number;
 }
 
+interface ExpirationSummary {
+  expiredUnits: number;
+  due30Units: number;
+  due60Units: number;
+  due90Units: number;
+}
+
+interface ExpirationItem {
+  id: number;
+  batchCode: string;
+  expirationDate: string;
+  quantityCurrent: number;
+  product: {
+    id: string;
+    name: string;
+    sku: string;
+    brand?: string;
+  };
+}
+
 export default function Dashboard() {
-  const { token } = useAuth();
+  const { token, businessSettings } = useAuth();
+  const expirationsEnabled = Boolean(businessSettings?.enabledModules?.includes("expirations"));
   const [dailySummary, setDailySummary] = useState<DashboardSummary>({
     totalSales: 0,
     totalTransactions: 0,
@@ -61,13 +82,31 @@ export default function Dashboard() {
   });
   const [last7Days, setLast7Days] = useState<Last7Row[]>([]);
   const [topProducts, setTopProducts] = useState<TopProduct[]>([]);
+  const [expirationSummary, setExpirationSummary] = useState<ExpirationSummary>({
+    expiredUnits: 0,
+    due30Units: 0,
+    due60Units: 0,
+    due90Units: 0,
+  });
+  const [expirationItems, setExpirationItems] = useState<ExpirationItem[]>([]);
 
   useEffect(() => {
     if (!token) return;
     apiRequest("/stats/dashboard", { token }).then(setDailySummary).catch(() => undefined);
     apiRequest("/stats/last7", { token }).then(setLast7Days).catch(() => undefined);
     apiRequest("/stats/top-products?limit=6", { token }).then(setTopProducts).catch(() => undefined);
-  }, [token]);
+    if (expirationsEnabled) {
+      apiRequest("/stats/expirations?days=90&limit=10", { token })
+        .then((data) => {
+          setExpirationSummary(data?.summary || { expiredUnits: 0, due30Units: 0, due60Units: 0, due90Units: 0 });
+          setExpirationItems(Array.isArray(data?.items) ? data.items : []);
+        })
+        .catch(() => undefined);
+    } else {
+      setExpirationSummary({ expiredUnits: 0, due30Units: 0, due60Units: 0, due90Units: 0 });
+      setExpirationItems([]);
+    }
+  }, [token, expirationsEnabled]);
 
   const paymentMethodsData = [
     { name: "Efectivo", value: dailySummary.cashSales, color: "#3b82f6", id: "cash" },
@@ -275,6 +314,51 @@ export default function Dashboard() {
             </div>
           </CardContent>
         </Card>
+
+        {expirationsEnabled && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Alertas de Caducidad</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="rounded border p-3 bg-red-50">
+                  <p className="text-xs text-gray-600">Vencidos</p>
+                  <p className="text-xl font-bold text-red-700">{expirationSummary.expiredUnits}</p>
+                </div>
+                <div className="rounded border p-3 bg-amber-50">
+                  <p className="text-xs text-gray-600">Vence en 30 días</p>
+                  <p className="text-xl font-bold text-amber-700">{expirationSummary.due30Units}</p>
+                </div>
+                <div className="rounded border p-3 bg-yellow-50">
+                  <p className="text-xs text-gray-600">Vence en 60 días</p>
+                  <p className="text-xl font-bold text-yellow-700">{expirationSummary.due60Units}</p>
+                </div>
+                <div className="rounded border p-3 bg-blue-50">
+                  <p className="text-xs text-gray-600">Vence en 90 días</p>
+                  <p className="text-xl font-bold text-blue-700">{expirationSummary.due90Units}</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {expirationItems.slice(0, 5).map((item) => (
+                  <div key={item.id} className="rounded border p-2 text-sm flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium">{item.product.name}</p>
+                      <p className="text-xs text-gray-500">
+                        Lote: {item.batchCode} · Caduca: {String(item.expirationDate).slice(0, 10)}
+                      </p>
+                    </div>
+                    <Badge variant="outline">Stock: {item.quantityCurrent}</Badge>
+                  </div>
+                ))}
+                {expirationItems.length === 0 && (
+                  <p className="text-sm text-gray-500">Sin lotes próximos a vencer.</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );

@@ -22,4 +22,13 @@
 
   Para que frontend apunte al backend, crea un `.env` en raiz con:
   - `VITE_API_URL=http://localhost:4000/api`
+
+  ## Despliegue Online (AWS)
+
+  Guia y plantillas listas en:
+  - `deploy/aws/README.md`
+  - `deploy/aws/nginx-pos.conf`
+  - `deploy/aws/pos-backend.service`
+  - `.env.production.example`
+  - `backend/.env.production.example`
   

@@ -31,6 +31,8 @@ psql -U postgres -d pos_system -f sql/005_credit_sales_prep.sql
 psql -U postgres -d pos_system -f sql/006_store_charge_policy.sql
 psql -U postgres -d pos_system -f sql/007_returns_and_cash_adjustments.sql
 psql -U postgres -d pos_system -f sql/008_multi_branch_foundation.sql
+psql -U postgres -d pos_system -f sql/009_system_settings_feature_flags.sql
+psql -U postgres -d pos_system -f sql/010_business_settings.sql
 ```
 
 ## 4) Instalar y correr
@@ -107,17 +109,49 @@ npm run create:user -- root root@pos.com "Super Administrador" superadmin admin1
 - `GET /api/settings/store`
 - `PATCH /api/settings/store` (solo superadmin)
   - body: `{ "cashierCanCharge": false }`
+- `GET /api/settings/system` (solo superadmin)
+- `PATCH /api/settings/system` (solo superadmin)
+  - body: `{ "multiBranchEnabled": true }`
+- `GET /api/settings/business`
+  - (si multi-sucursal activo, admite `?branchId=2`)
+- `PATCH /api/settings/business` (solo superadmin)
+  - body:
+```json
+{
+  "branchId": 1,
+  "businessName": "Tienda Central",
+  "nit": "1234567-8",
+  "phone": "5555-5555",
+  "address": "Zona 1",
+  "currencyCode": "GTQ",
+  "logoUrl": "",
+  "useDarkMode": false
+}
+```
 
 ### Sucursales (Bearer token)
 - `GET /api/branches`
+- `GET /api/branches/:id` (solo superadmin)
 - `POST /api/branches` (solo superadmin)
   - body: `{ "code": "NORTE", "name": "Sucursal Norte" }`
 - `PATCH /api/branches/:id` (solo superadmin)
+- `DELETE /api/branches/:id` (solo superadmin)
+  - bloquea borrado si la sucursal tiene usuarios/ventas/caja/productos/categorias
+Nota: estas rutas solo se habilitan cuando `multiBranchEnabled = true`.
 
 ### Productos (Bearer token)
 - `GET /api/products`
 - `POST /api/products` (`barcode` opcional)
 - `PATCH /api/products/:id` (`barcode` opcional)
+- `POST /api/products/reassign-branch` (solo superadmin y con multi-sucursal activo)
+  - body:
+```json
+{
+  "targetBranchId": 2,
+  "productIds": [10, 11, 12]
+}
+```
+  - comportamiento: intenta mapear categoria por nombre en la sucursal destino; si no existe, deja `category_id = null`
 
 ### Usuarios (solo superadmin)
 - `GET /api/users`

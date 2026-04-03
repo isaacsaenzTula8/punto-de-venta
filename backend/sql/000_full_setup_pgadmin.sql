@@ -86,6 +86,7 @@ CREATE TABLE products (
     stock INTEGER DEFAULT 0 CHECK (stock >= 0),
     min_stock INTEGER DEFAULT 10,
     image_url TEXT,
+    location_code VARCHAR(40),
     active BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -98,6 +99,7 @@ CREATE INDEX idx_products_name ON products(name);
 CREATE INDEX idx_products_category ON products(category_id);
 CREATE INDEX idx_products_active ON products(active);
 CREATE INDEX idx_products_stock ON products(stock);
+CREATE INDEX idx_products_location_code ON products(location_code);
 
 -- =====================================================
 -- TABLA: cash_sessions

@@ -27,6 +27,8 @@ interface SaleRow {
   id: number;
   sale_number: string;
   sale_date: string;
+  subtotal?: number;
+  discount?: number;
   total: number;
   payment_method: "cash" | "card" | "transfer" | "mixed" | "credit";
   payment_status: "completed" | "pending" | "cancelled" | "refunded";
@@ -52,6 +54,8 @@ interface SaleDetail {
   id: number;
   sale_number: string;
   sale_date: string;
+  subtotal?: number;
+  discount?: number;
   total: number;
   payment_method: "cash" | "card" | "transfer" | "mixed" | "credit";
   payment_status: "completed" | "pending" | "cancelled" | "refunded";
@@ -61,11 +65,38 @@ interface SaleDetail {
   items: SaleDetailItem[];
 }
 
+function toIsoDate(date: Date) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getTodayIso() {
+  return toIsoDate(new Date());
+}
+
+function getDaysAgoIso(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return toIsoDate(d);
+}
+
+function getStartOfMonthIso(baseDate: Date = new Date()) {
+  return toIsoDate(new Date(baseDate.getFullYear(), baseDate.getMonth(), 1));
+}
+
+function getEndOfMonthIso(baseDate: Date = new Date()) {
+  return toIsoDate(new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 0));
+}
+
 export default function Sales() {
-  const { token, user } = useAuth();
+  const { token } = useAuth();
   const [sales, setSales] = useState<SaleRow[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterMethod, setFilterMethod] = useState<string>("all");
+  const [fromDate, setFromDate] = useState<string>(getDaysAgoIso(6));
+  const [toDate, setToDate] = useState<string>(getTodayIso());
   const [selectedSale, setSelectedSale] = useState<SaleDetail | null>(null);
   const [showDetailDialog, setShowDetailDialog] = useState(false);
   const [showRefundDialog, setShowRefundDialog] = useState(false);
@@ -78,6 +109,8 @@ export default function Sales() {
       const params = new URLSearchParams();
       if (searchQuery.trim()) params.set("search", searchQuery.trim());
       if (filterMethod !== "all") params.set("paymentMethod", filterMethod);
+      if (fromDate) params.set("from", fromDate);
+      if (toDate) params.set("to", toDate);
       const data = await apiRequest(`/sales?${params.toString()}`, { token });
       setSales(data);
     } catch (error: any) {
@@ -87,7 +120,7 @@ export default function Sales() {
 
   useEffect(() => {
     fetchSales();
-  }, [token, searchQuery, filterMethod]);
+  }, [token, searchQuery, filterMethod, fromDate, toDate]);
 
   const viewDetail = async (saleId: number) => {
     if (!token) return;
@@ -97,33 +130,6 @@ export default function Sales() {
       setShowDetailDialog(true);
     } catch (error: any) {
       toast.error(error?.message || "No se pudo cargar detalle de venta");
-    }
-  };
-
-  const chargeSale = async (sale: SaleRow) => {
-    if (!token) return;
-    const methodInput = window.prompt(
-      "Metodo de pago para cobrar (cash, card, transfer, mixed, credit):",
-      sale.payment_method || "cash"
-    );
-    if (!methodInput) return;
-    const paymentMethod = methodInput.trim().toLowerCase();
-    const allowed = ["cash", "card", "transfer", "mixed", "credit"];
-    if (!allowed.includes(paymentMethod)) {
-      toast.error("Metodo de pago invalido");
-      return;
-    }
-
-    try {
-      await apiRequest(`/sales/${sale.id}/charge`, {
-        method: "POST",
-        token,
-        body: JSON.stringify({ paymentMethod }),
-      });
-      toast.success("Venta cobrada correctamente");
-      fetchSales();
-    } catch (error: any) {
-      toast.error(error?.message || "No se pudo cobrar la venta");
     }
   };
 
@@ -211,6 +217,7 @@ export default function Sales() {
   };
 
   const totalSales = useMemo(() => sales.reduce((sum, s) => sum + Number(s.total), 0), [sales]);
+  const totalDiscounts = useMemo(() => sales.reduce((sum, s) => sum + Number(s.discount || 0), 0), [sales]);
   const todaySales = useMemo(
     () =>
       sales.filter((s) => {
@@ -223,11 +230,12 @@ export default function Sales() {
 
   return (
     <div className="min-h-full bg-gray-50">
-      <div className="bg-white border-b px-6 py-4">
-        <div className="flex items-center justify-between mb-4">
+      <div className="bg-white border-b px-4 py-4 sm:px-6">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Historial de Ventas</h1>
+            <h1 className="text-xl font-bold text-gray-900 sm:text-2xl">Historial de Ventas</h1>
             <p className="text-sm text-gray-500">Consulta todas las transacciones realizadas</p>
+            <p className="text-xs text-amber-700 mt-1">Los tickets pendientes se cobran desde Punto de Venta, pestaña Tickets.</p>
           </div>
           <Button variant="outline" className="gap-2">
             <Download className="h-4 w-4" />
@@ -235,7 +243,7 @@ export default function Sales() {
           </Button>
         </div>
 
-        <div className="flex gap-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
             <Input
@@ -248,7 +256,7 @@ export default function Sales() {
           </div>
 
           <Select value={filterMethod} onValueChange={setFilterMethod}>
-            <SelectTrigger className="w-48 h-11">
+            <SelectTrigger className="h-11 w-full md:w-48">
               <Filter className="h-4 w-4 mr-2" />
               <SelectValue />
             </SelectTrigger>
@@ -261,11 +269,72 @@ export default function Sales() {
             </SelectContent>
           </Select>
         </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[200px_200px_auto]">
+          <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+          <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const today = getTodayIso();
+                setFromDate(today);
+                setToDate(today);
+              }}
+            >
+              Hoy
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const now = new Date();
+                setFromDate(getStartOfMonthIso(now));
+                setToDate(getEndOfMonthIso(now));
+              }}
+            >
+              Este mes
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const now = new Date();
+                const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                setFromDate(getStartOfMonthIso(previousMonth));
+                setToDate(getEndOfMonthIso(previousMonth));
+              }}
+            >
+              Mes pasado
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setFromDate(getDaysAgoIso(6));
+                setToDate(getTodayIso());
+              }}
+            >
+              Ultimos 7 dias
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setFromDate("");
+                setToDate("");
+              }}
+            >
+              Todo
+            </Button>
+          </div>
+        </div>
       </div>
 
-      <div className="p-6 space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Card className="p-6">
+      <div className="space-y-6 p-4 sm:p-6">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
+          <Card className="section-card p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600">Total Ventas</p>
@@ -275,7 +344,7 @@ export default function Sales() {
             </div>
           </Card>
 
-          <Card className="p-6">
+          <Card className="section-card p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600">Ventas Hoy</p>
@@ -285,7 +354,7 @@ export default function Sales() {
             </div>
           </Card>
 
-          <Card className="p-6">
+          <Card className="section-card p-6">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600">Monto Total</p>
@@ -294,10 +363,81 @@ export default function Sales() {
               <DollarSign className="h-12 w-12 text-purple-600" />
             </div>
           </Card>
+
+          <Card className="section-card p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Descuentos</p>
+                <p className="text-3xl font-bold text-orange-600 mt-1">{formatCurrency(totalDiscounts)}</p>
+              </div>
+              <Receipt className="h-12 w-12 text-orange-600" />
+            </div>
+          </Card>
         </div>
 
-        <Card>
-          <div className="overflow-x-auto">
+        <Card className="section-card">
+          <div className="space-y-3 p-3 md:hidden">
+            {sales.map((sale) => (
+              <Card key={sale.id} className="section-card p-3">
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-mono text-sm font-semibold">{sale.sale_number}</p>
+                      <p className="text-xs text-gray-500">{new Date(sale.sale_date).toLocaleString("es-GT")}</p>
+                    </div>
+                    <Badge
+                      variant="default"
+                      className={
+                        sale.payment_status === "completed"
+                          ? "bg-green-600"
+                          : sale.payment_status === "pending"
+                          ? "bg-orange-600"
+                          : "bg-red-600"
+                      }
+                    >
+                      {sale.payment_status === "completed"
+                        ? "Completada"
+                        : sale.payment_status === "pending"
+                        ? "Pendiente"
+                        : sale.payment_status === "refunded"
+                        ? "Reembolsada"
+                        : "Cancelada"}
+                    </Badge>
+                  </div>
+                  <p className="text-sm text-gray-700">Cajero: {sale.cashier}</p>
+                  <div className="text-xs text-gray-600">
+                    <p>Subtotal: {formatCurrency(Number(sale.subtotal || sale.total || 0))}</p>
+                    <p>Descuento: {formatCurrency(Number(sale.discount || 0))}</p>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm">
+                      {getPaymentIcon(sale.payment_method)}
+                      <span>{getPaymentName(sale.payment_method)}</span>
+                    </div>
+                    <span className="font-bold text-green-600">{formatCurrency(Number(sale.total))}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {sale.payment_status === "completed" && (
+                      <Button variant="outline" size="sm" onClick={() => openRefundDialog(sale.id)}>
+                        Devolver
+                      </Button>
+                    )}
+                    {sale.payment_status === "pending" && (
+                      <Badge variant="secondary" className="text-xs">
+                        Cobrar en Punto de Venta
+                      </Badge>
+                    )}
+                    <Button variant="ghost" size="sm" onClick={() => viewDetail(sale.id)}>
+                      <Eye className="mr-1 h-4 w-4" />
+                      Ver
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto md:block">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -306,6 +446,8 @@ export default function Sales() {
                   <TableHead>Cajero</TableHead>
                   <TableHead className="text-center">Articulos</TableHead>
                   <TableHead>Metodo de Pago</TableHead>
+                  <TableHead className="text-right">Subtotal</TableHead>
+                  <TableHead className="text-right">Descuento</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                   <TableHead className="text-center">Estado</TableHead>
                   <TableHead className="text-right">Acciones</TableHead>
@@ -331,6 +473,8 @@ export default function Sales() {
                         <span>{getPaymentName(sale.payment_method)}</span>
                       </div>
                     </TableCell>
+                    <TableCell className="text-right">{formatCurrency(Number(sale.subtotal || sale.total || 0))}</TableCell>
+                    <TableCell className="text-right text-orange-700">{formatCurrency(Number(sale.discount || 0))}</TableCell>
                     <TableCell className="text-right font-bold text-green-600">{formatCurrency(Number(sale.total))}</TableCell>
                     <TableCell className="text-center">
                       <Badge
@@ -359,10 +503,8 @@ export default function Sales() {
                             Devolver
                           </Button>
                         )}
-                        {sale.payment_status === "pending" && user?.permissions?.salesCharge && (
-                          <Button variant="outline" size="sm" onClick={() => chargeSale(sale)}>
-                            Cobrar
-                          </Button>
+                        {sale.payment_status === "pending" && (
+                          <Badge variant="secondary">Cobrar en Punto de Venta</Badge>
                         )}
                         <Button variant="ghost" size="icon" onClick={() => viewDetail(sale.id)}>
                           <Eye className="h-4 w-4" />
@@ -373,26 +515,26 @@ export default function Sales() {
                 ))}
               </TableBody>
             </Table>
-
-            {sales.length === 0 && (
-              <div className="text-center py-12">
-                <Receipt className="h-16 w-16 text-gray-300 mx-auto mb-4" />
-                <p className="text-gray-500">No se encontraron ventas</p>
-              </div>
-            )}
           </div>
+
+          {sales.length === 0 && (
+            <div className="text-center py-12">
+              <Receipt className="h-16 w-16 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500">No se encontraron ventas</p>
+            </div>
+          )}
         </Card>
       </div>
 
       <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="max-w-[calc(100vw-1.5rem)] sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Detalle de Venta</DialogTitle>
           </DialogHeader>
 
           {selectedSale && (
             <div className="space-y-6 py-4">
-              <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
+              <div className="grid grid-cols-1 gap-4 rounded-lg bg-gray-50 p-4 sm:grid-cols-2">
                 <div>
                   <p className="text-sm text-gray-600">ID Venta</p>
                   <p className="font-mono font-semibold">{selectedSale.sale_number}</p>
@@ -445,6 +587,14 @@ export default function Sales() {
               </div>
 
               <div className="border-t pt-4 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Subtotal:</span>
+                  <span className="font-semibold">{formatCurrency(Number(selectedSale.subtotal || selectedSale.total || 0))}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Descuento:</span>
+                  <span className="font-semibold text-orange-700">{formatCurrency(Number(selectedSale.discount || 0))}</span>
+                </div>
                 <div className="flex justify-between text-lg border-t pt-2">
                   <span className="font-bold">Total:</span>
                   <span className="font-bold text-blue-600">{formatCurrency(Number(selectedSale.total))}</span>
@@ -461,7 +611,7 @@ export default function Sales() {
       </Dialog>
 
       <Dialog open={showRefundDialog} onOpenChange={setShowRefundDialog}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="max-w-[calc(100vw-1.5rem)] sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Procesar Devolucion</DialogTitle>
           </DialogHeader>
@@ -478,7 +628,7 @@ export default function Sales() {
               <div>
                 <p className="mb-2 text-sm font-medium">Metodo de devolucion</p>
                 <Select value={refundMethod} onValueChange={(value) => setRefundMethod(value as typeof refundMethod)}>
-                  <SelectTrigger className="w-56">
+                  <SelectTrigger className="w-full sm:w-56">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -522,7 +672,7 @@ export default function Sales() {
                 })}
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={() => processRefund(false)}>
                   Devolucion Parcial
                 </Button>

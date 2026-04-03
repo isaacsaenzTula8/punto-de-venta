@@ -1,0 +1,33 @@
+PENDIENTES DEL PROYECTO POS
+===========================
+
+1) TIENDA EN LINEA (Ecommerce)
+- Estado: Implementacion base creada, pendiente de consolidar en produccion.
+- URL de prueba frontend:
+  - http://TU_IP:5173/shop
+  - http://TU_IP:5173/shop/1
+    (reemplazar "1" por el branch_id de la sucursal)
+- Pendientes de esta funcionalidad:
+  - Definir dominio publico real para tienda.
+  - Endurecer seguridad de endpoint publico (rate limit / anti abuso).
+  - Conectar pasarela de pago real (opcional, fase siguiente).
+  - Ajustar UX final de checkout y confirmacion de pedido.
+  - Validar flujo completo por sucursal en ambiente online real.
+
+2) QR por producto
+- Estado: Pospuesto (backburner).
+- Nota: primero cerrar escaneo por camara + flujo de codigos de barras.
+
+3) Ajustes visuales finos
+- Estado: Parcialmente completado.
+- Pendiente:
+  - Revisar coherencia de tema en todas las pantallas restantes.
+  - Afinar responsive de tablas administrativas en movil.
+
+4) Operacion online + POS
+- Estado: Base lista, pendiente hardening.
+- Pendiente:
+  - Definir politicas finales de conversion online_order -> sale.
+  - Revisar reconciliacion de caja/reportes con pedidos online.
+
+Ultima actualizacion: 2026-03-29
