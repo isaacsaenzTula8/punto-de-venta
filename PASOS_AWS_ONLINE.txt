@@ -1,0 +1,172 @@
+AWS ONLINE SETUP - POS
+Servidor: 18.216.249.64
+Objetivo: dejar POS funcionando online y preparado para multiempresa (1 base de datos por empresa).
+
+==================================================
+0) PREREQUISITOS EN TU PC
+==================================================
+1. Tener la llave .pem de AWS (ejemplo: pos-key.pem).
+2. Tener Git instalado.
+3. Tener este proyecto actualizado localmente.
+
+==================================================
+1) CONECTAR A EC2
+==================================================
+Desde PowerShell (ajusta ruta de tu llave):
+
+ssh -i "C:\ruta\pos-key.pem" ubuntu@18.216.249.64
+
+Si da error de permisos en Windows:
+- Mueve la llave a una carpeta tuya (ej: C:\Users\Isaac\.ssh\).
+- Reintenta.
+
+==================================================
+2) INSTALAR PAQUETES BASE
+==================================================
+Ya dentro de EC2:
+
+sudo apt update
+sudo apt install -y nginx postgresql postgresql-contrib curl git
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v
+npm -v
+
+==================================================
+3) CLONAR PROYECTO EN EL SERVIDOR
+==================================================
+cd /var/www
+sudo git clone https://github.com/TU_USUARIO/punto-de-venta.git
+sudo chown -R ubuntu:ubuntu /var/www/punto-de-venta
+cd /var/www/punto-de-venta
+
+==================================================
+4) BASE DE DATOS (MODELO MULTIEMPRESA)
+==================================================
+IMPORTANTE:
+Vamos a manejar 1 BD por empresa.
+Convencion recomendada:
+- DB: pos_empresa_<slug>
+- USER: pos_u_<slug>
+
+Ejemplo para empresa demo:
+
+sudo -u postgres psql
+
+CREATE DATABASE pos_empresa_demo;
+CREATE USER pos_u_demo WITH ENCRYPTED PASSWORD 'CAMBIA_PASSWORD_FUERTE';
+GRANT ALL PRIVILEGES ON DATABASE pos_empresa_demo TO pos_u_demo;
+\q
+
+Cargar esquema/migraciones:
+
+cd /var/www/punto-de-venta
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f database-schema.sql
+
+# Luego aplicar SQL de backend en orden:
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/001_cash_sessions.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/002_security_sessions.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/003_products_barcode.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/004_sale_items_historic_cost.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/005_credit_sales_prep.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/006_store_charge_policy.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/007_returns_and_cash_adjustments.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/008_multi_branch_foundation.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/009_system_settings_feature_flags.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/010_business_settings.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/011_business_theme_customization.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/012_product_images_uploads.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/013_online_orders_foundation.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/014_products_location_codes.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/015_cash_movements_and_cutoff_support.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/016_product_timed_discounts.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/017_low_stock_threshold_settings.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/018_products_brand.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/019_product_presentations.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/020_sale_items_presentations.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/021_vertical_profiles_and_expiration.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/022_inventory_batches.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/023_products_size_label.sql
+psql "postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo" -f backend/sql/024_products_barcode_unique_guard.sql
+
+==================================================
+5) CONFIGURAR BACKEND
+==================================================
+cd /var/www/punto-de-venta/backend
+npm ci
+cp .env.production.example .env
+nano .env
+
+Contenido recomendado:
+PORT=4000
+DATABASE_URL=postgresql://pos_u_demo:CAMBIA_PASSWORD_FUERTE@localhost:5432/pos_empresa_demo
+JWT_SECRET=CAMBIA_ESTE_JWT_SECRET_LARGO
+JWT_EXPIRES_IN=12h
+SESSION_IDLE_MINUTES=30
+
+==================================================
+6) CREAR SERVICIO BACKEND (SYSTEMD)
+==================================================
+sudo cp /var/www/punto-de-venta/deploy/aws/pos-backend.service /etc/systemd/system/pos-backend.service
+sudo systemctl daemon-reload
+sudo systemctl enable pos-backend
+sudo systemctl start pos-backend
+sudo systemctl status pos-backend --no-pager
+
+Prueba de salud:
+curl http://127.0.0.1:4000/api/health
+
+==================================================
+7) CONFIGURAR FRONTEND + NGINX
+==================================================
+cd /var/www/punto-de-venta
+cp .env.production.example .env.production
+npm ci
+npm run build
+
+sudo cp /var/www/punto-de-venta/deploy/aws/nginx-pos.conf /etc/nginx/sites-available/pos
+sudo ln -sf /etc/nginx/sites-available/pos /etc/nginx/sites-enabled/pos
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
+
+Abrir en navegador:
+http://18.216.249.64
+
+==================================================
+8) ACTUALIZAR A FUTURO
+==================================================
+cd /var/www/punto-de-venta
+git pull
+
+cd backend
+npm ci
+sudo systemctl restart pos-backend
+
+cd ..
+npm ci
+npm run build
+sudo systemctl reload nginx
+
+==================================================
+9) MULTIEMPRESA (SIGUIENTE FASE TECNICA)
+==================================================
+Hoy: 1 despliegue = 1 empresa (DATABASE_URL unico).
+
+Para multiempresa real en una sola app:
+1. Crear BD central (control) con tabla companies:
+   - company_id
+   - company_slug
+   - db_host
+   - db_port
+   - db_name
+   - db_user
+   - db_password (idealmente cifrada)
+   - active
+2. Resolver empresa por subdominio/header (ej: empresa1.tudominio.com).
+3. Crear pool dinamico por company_id y cachearlo.
+4. Todas las rutas usan pool del tenant actual.
+5. Provisionador para crear nueva BD por empresa y correr migraciones.
+
+Esto no rompe lo actual, pero requiere refactor del backend para pool multi-tenant.
+
